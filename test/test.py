@@ -152,10 +152,113 @@ async def test_spi(dut):
 @cocotb.test()
 async def test_pwm_freq(dut):
     # Write your test here
+    #####
+
+
+    # Start the clock (100 MHz)
+    clock = Clock(dut.clk, 10, units="ns")
+    cocotb.start_soon(clock.start())
+    
+    # Enable the design
+    dut.ena.value = 1
+    
+    # Reset the system
+    dut.rst_n.value = 0
+    await ClockCycles(dut.clk, 10)
+    dut.rst_n.value = 1
+    
+    # Enable PWM output and set to 50% duty cycle for reliable measurement
+    await send_spi_transaction(dut, 1, 0x00, 0x01)  # Enable output for channel 0
+    await send_spi_transaction(dut, 1, 0x02, 0x01)  # Enable PWM mode
+    await send_spi_transaction(dut, 1, 0x04, 0x80)  # Set 50% duty cycle
+    
+    # Measure frequency by timing rising edges
+    first_edge = None
+    second_edge = None
+    edge_count = 0
+    
+    # Wait for two rising edges
+    for _ in range(100000):  # Timeout safety
+        await RisingEdge(dut.clk)
+        if dut.uo_out.value & 0x01:  # Check channel 0
+            if first_edge is None:
+                first_edge = cocotb.utils.get_sim_time(units='ns')
+            elif edge_count == 0:
+                second_edge = cocotb.utils.get_sim_time(units='ns')
+                break
+            edge_count += 1
+    
+    # Calculate frequency
+    period_ns = second_edge - first_edge
+    frequency = 1e9 / period_ns  # Convert to Hz
+    
+    # Check if frequency is within ±1% of 3 kHz
+    assert 2970 <= frequency <= 3030, f"PWM frequency {frequency:.1f} Hz outside 3000Hz ±1% tolerance"
+    
+
+
+
+
+    #####
     dut._log.info("PWM Frequency test completed successfully")
 
 
 @cocotb.test()
 async def test_pwm_duty(dut):
+    #####
     # Write your test here
+
+
+
+# Start the clock (100 MHz)
+    clock = Clock(dut.clk, 10, units="ns")
+    cocotb.start_soon(clock.start())
+    
+    # Enable the design
+    dut.ena.value = 1
+    
+    # Reset the system
+    dut.rst_n.value = 0
+    await ClockCycles(dut.clk, 10)
+    dut.rst_n.value = 1
+    
+    # Test cases: 0%, 50%, and 100% duty cycles
+    test_cases = [
+        (0x00, 0),    # 0%
+        (0x80, 50),   # 50%
+        (0xFF, 100)   # 100%
+    ]
+    
+    for duty_reg, expected_duty in test_cases:
+        # Configure PWM
+        await send_spi_transaction(dut, 1, 0x00, 0x01)  # Enable output
+        await send_spi_transaction(dut, 1, 0x02, 0x01)  # Enable PWM mode
+        await send_spi_transaction(dut, 1, 0x04, duty_reg)  # Set duty cycle
+        
+        # Measure duty cycle
+        high_time = 0
+        total_time = 0
+        
+        # Sample over multiple cycles
+        for _ in range(10000):
+            await RisingEdge(dut.clk)
+            if dut.uo_out.value & 0x01:
+                high_time += 1
+            total_time += 1
+        
+        if total_time > 0:
+            measured_duty = (high_time / total_time) * 100
+            # Check if duty cycle is within ±1% tolerance
+            assert abs(measured_duty - expected_duty) <= 1.0, \
+                f"Duty cycle {measured_duty:.1f}% != expected {expected_duty}% ±1%"
+        else:
+            # For 0% and 100% cases, check direct values
+            if expected_duty == 0:
+                assert dut.uo_out.value & 0x01 == 0, "Output should be low for 0% duty cycle"
+            elif expected_duty == 100:
+                assert dut.uo_out.value & 0x01 == 1, "Output should be high for 100% duty cycle"
+    
+
+
+    #####
     dut._log.info("PWM Duty Cycle test completed successfully")
