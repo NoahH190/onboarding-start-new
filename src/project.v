@@ -5,7 +5,7 @@
 
 `default_nettype none
 
-module tt_um_uwasic_noah_harman (
+module tt_um_noah_harman (
 
   input  wire [7:0] ui_in,    // Dedicated inputs
   output wire [7:0] uo_out,   // Dedicated outputs
