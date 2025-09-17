@@ -6,10 +6,8 @@ module spi_peripheral (
     input wire SCLK, //SCLK input
     input wire clk, 
     input wire rst_n,
-    output reg en_out[7:0],
-    output reg en_out[15:8],
-    output reg en_pwm_mode[7:0],
-    output reg en_pwm_mode[15:8],
+    output reg [15:0] en_out,
+    output reg [15:0] en_pwm_mode,
     output reg pwm_duty_cycle[7:0]
 );
 
