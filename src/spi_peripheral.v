@@ -1,23 +1,30 @@
 `default_nettype none
 
+
 module spi_peripheral (
-    input wire COPI, //COPI input
-    input wire nCS, //nCS input
-    input wire SCLK, //SCLK input
-    input wire clk, 
-    input wire rst_n,
-    output reg [15:0] en_out,
-    output reg [15:0] en_pwm_mode,
-    output reg pwm_duty_cycle[7:0]
+    input  wire COPI,     
+    input  wire nCS,      
+    input  wire SCLK,     
+    input  wire clk,
+    input  wire rst_n,
+
+    output wire [7:0] en_reg_out_7_0,
+    output wire [7:0] en_reg_out_15_8,
+    output wire [7:0] en_reg_pwm_7_0,
+    output wire [7:0] en_reg_pwm_15_8,
+    output wire [7:0] pwm_duty_cycle
 );
 
 reg sclk_s1, sclk_s2, copi_s1, copi_s2, ncs_s1, ncs_s2; // implementtion of 2 ff synchronizer for each input
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        sclk_s1 <= 1'b0; sclk_s2 <= 1'b0; // reset 
-        copi_s1 <= 1'b0; copi_s2 <= 1'b0;
-        ncs_s1  <= 1'b1; ncs_s2  <= 1'b1; 
+        sclk_s1 <= 1'b0; 
+        sclk_s2 <= 1'b0; // reset 
+        copi_s1 <= 1'b0; 
+        copi_s2 <= 1'b0;
+        ncs_s1  <= 1'b1; 
+        ncs_s2  <= 1'b1; 
     end else begin
         sclk_s1 <= SCLK;  // synchronizes clocks and such
         sclk_s2 <= sclk_s1;
@@ -51,12 +58,25 @@ reg [15:0] shift_reg;
 reg [4:0]  bit_cnt;
 reg        in_frame;
 
+
+reg [15:0] en_out;
+reg [15:0] en_pwm_mode;
+reg [7:0]  pwm_duty_cycle;
+
+// Map internal regs to the split 8-bit outputs expected by top
+assign en_reg_out_7_0   = en_out[7:0];
+assign en_reg_out_15_8  = en_out[15:8];
+assign en_reg_pwm_7_0   = en_pwm_mode[7:0];
+assign en_reg_pwm_15_8  = en_pwm_mode[15:8];
+assign pwm_duty_cycle   = pwm_duty_cycle_r;
+
+wire [15:0] next_shift = {shift_reg[14:0], copi_sync};
+
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         en_out         <= 16'h0000;
         en_pwm_mode    <= 16'h0000;
         pwm_duty_cycle <= 8'h00;
-
         shift_reg      <= 16'd0;
         bit_cnt        <= 5'd0;
         in_frame       <= 1'b0;
