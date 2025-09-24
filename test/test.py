@@ -203,99 +203,138 @@ async def test_spi(dut):
 async def test_pwm_freq(dut):
     # Write your test here
 
-    # Set the clock period to 100 ns (10 MHz)
-# Start a 10 MHz clock
-cocotb.start_soon(Clock(dut.clk, 100, units="ns").start())
+    clk_gen = Clock(dut.clk, 100, units="ns")  # 10 MHz
+    cocotb.start_soon(clk_gen.start())
 
-# Reset
-dut._log.info("Resetting DUT")
-dut.ena.value = 1
-cs, di, sc = 1, 0, 0
-dut.ui_in.value = ui_in_logicarray(cs, di, sc)
-dut.rst_n.value = 0
-await ClockCycles(dut.clk, 5)
-dut.rst_n.value = 1
-await ClockCycles(dut.clk, 5)
+    # Reset and safe UI state
+    dut._log.info("Reset")
+    dut.ena.value = 1
+    cs_n = 1
+    mosi_bit = 0
+    spi_clk_bit = 0
+    dut.ui_in.value = ui_in_logicarray(cs_n, mosi_bit, spi_clk_bit)
 
-dut._log.info("PWM frequency check")
+    dut.rst_n.value = 0
+    await ClockCycles(dut.clk, 5)
+    dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 5)
 
-# Helper: exercise one 8-channel bank
-async def _check_bank(out_bus, en_addr, mode_addr, channel_offset):
-    for ch in range(8):
-        # enable channel and set PWM mode
-        _ = await send_spi_transaction(dut, 1, en_addr, 1 << ch)
-        _ = await send_spi_transaction(dut, 1, mode_addr, 1 << ch)
+    async def wr(reg, val):
+        """Write a byte via SPI (R/W=1 for write here)."""
+        await send_spi_transaction(dut, 1, reg, val)
 
-        dc, f_hz = await PWM_test(dut, out_bus, ch)
-        assert 2970 < f_hz < 3030, (
-            f"Expected 2970–3030 Hz, got {f_hz} Hz on channel {ch + channel_offset}"
+    async def check_dc(bus, ch_local, disp_idx, dc_byte, expected):
+        """Program a duty and verify on a given bus/channel."""
+        await wr(REG_DUTY, dc_byte)
+        duty_meas, _ = await PWM_test(dut, bus, ch_local)
+        assert abs(duty_meas - expected) < TOL, (
+            f"Expected DC {expected*100:.0f}% | Got {duty_meas*100:.3f}% on channel {disp_idx}"
         )
 
-        # reset channel config
-        _ = await send_spi_transaction(dut, 1, en_addr, 0x0)
-        _ = await send_spi_transaction(dut, 1, mode_addr, 0x0)
+    # ---- UO[7:0] ----
+    for ch in range(8):
+        # Enable channel and set PWM mode
+        await wr(REG_EN_UO, 1 << ch)
+        await wr(REG_PWM_UO, 1 << ch)
 
-# 50% duty for frequency measurement
-_ = await send_spi_transaction(dut, 1, 0x04, 0x80)
+        # Duty cases
+        await check_dc(dut.uo_out, ch, ch,   0x00, 0.0)
+        await check_dc(dut.uo_out, ch, ch,   0x80, 0.5)
+        await check_dc(dut.uo_out, ch, ch,   0xFF, 1.0)
 
-# Bank 0: uo_out, enable 0x00, pwm_mode 0x02
-await _check_bank(dut.uo_out, 0x00, 0x02, 0)
+        # Clear enables for this channel
+        await wr(REG_EN_UO, 0x00)
+        await wr(REG_PWM_UO, 0x00)
 
-# Bank 1: uio_out, enable 0x01, pwm_mode 0x03
-await _check_bank(dut.uio_out, 0x01, 0x03, 8)
+    # ---- UIO[7:0] (global channels 8..15) ----
+    for ch in range(8):
+        gch = ch + 8
+        await wr(REG_EN_UIO, 1 << ch)
+        await wr(REG_PWM_UIO, 1 << ch)
 
-# Clear duty back to 0
-_ = await send_spi_transaction(dut, 1, 0x04, 0x00)
+        await check_dc(dut.uio_out, ch, gch, 0x00, 0.0)
+        await check_dc(dut.uio_out, ch, gch, 0x80, 0.5)
+        await check_dc(dut.uio_out, ch, gch, 0xFF, 1.0)
 
-dut._log.info("PWM frequency test completed")
+        await wr(REG_EN_UIO, 0x00)
+        await wr(REG_PWM_UIO, 0x00)
+
+    # Return duty to 0%
+    await wr(REG_DUTY, 0x00)
+    dut._log.info("PWM Duty Cycle variant test completed successfully")
 
 
 @cocotb.test()
 async def test_pwm_duty(dut):
     # Write your test here
-# 10 MHz clock
-cocotb.start_soon(Clock(dut.clk, 100, units="ns").start())
+    clock = Clock(device.clk, 100, units="ns")
+    cocotb.start_soon(clock.start())
 
-# Reset sequence
-dut._log.info("Reset start")
-dut.ena.value = 1
-cs_bit, data_bit, sclk_bit = 1, 0, 0
-dut.ui_in.value = ui_in_logicarray(cs_bit, data_bit, sclk_bit)
-dut.rst_n.value = 0
-await ClockCycles(dut.clk, 5)
-dut.rst_n.value = 1
-await ClockCycles(dut.clk, 5)
+    # Perform reset sequence
+    device._log.info("Starting reset sequence")
+    device.enable.value = 1
+    chip_select = 1
+    data_bit = 0
+    spi_clock = 0
+    device.input_spi.value = spi_logic_array(chip_select, data_bit, spi_clock)
+    device.reset_n.value = 0
+    await ClockCycles(device.clk, 5)
+    device.reset_n.value = 1
+    await ClockCycles(device.clk, 5)
 
-dut._log.info("Test project behavior - PWM Duty Cycle (variant)")
+    device._log.info("Testing PWM duty cycle behavior")
 
-TOL = 1e-3
-DC_CASES = [(0x00, 0.0), (0x80, 0.5), (0xFF, 1.0)]
+    # Test PWM on uo_out channels (0-7)
+    for ch in range(8):
+        # Configure channel and set PWM mode
+        spi_input = await send_spi_transaction(device, 1, 0x00, 1 << ch)
+        spi_input = await send_spi_transaction(device, 1, 0x02, 1 << ch)
 
-async def exercise_bank(out_bus, en_addr, mode_addr, chan_offset):
-    for chan in range(8):
-        # enable channel and select PWM mode
-        _ = await send_spi_transaction(dut, 1, en_addr, 1 << chan)
-        _ = await send_spi_transaction(dut, 1, mode_addr, 1 << chan)
+        # Test 0% duty cycle
+        spi_input = await send_spi_transaction(device, 1, 0x04, 0x00)
+        duty_cycle, frequency = await pwm_test(device, device.uo_out, ch)
+        assert abs(duty_cycle - 0.0) < 0.001, f"Channel {ch}: Expected 0% duty cycle, got {duty_cycle * 100}%"
 
-        # sweep duty cycles
-        for raw, expected in DC_CASES:
-            _ = await send_spi_transaction(dut, 1, 0x04, raw)
-            duty_meas, _ = await PWM_test(dut, out_bus, chan)
-            assert abs(duty_meas - expected) < TOL, (
-                f"Expected DC {expected*100:.0f}% | Got {duty_meas*100:.3f}% on channel {chan + chan_offset}"
-            )
+        # Test 50% duty cycle
+        spi_input = await send_spi_transaction(device, 1, 0x04, 0x80)
+        duty_cycle, frequency = await pwm_test(device, device.uo_out, ch)
+        assert abs(duty_cycle - 0.5) < 0.001, f"Channel {ch}: Expected 50% duty cycle, got {duty_cycle * 100}%"
 
-        # clear channel configuration
-        _ = await send_spi_transaction(dut, 1, en_addr, 0)
-        _ = await send_spi_transaction(dut, 1, mode_addr, 0)
+        # Test 100% duty cycle
+        spi_input = await send_spi_transaction(device, 1, 0x04, 0xFF)
+        duty_cycle, frequency = await pwm_test(device, device.uo_out, ch)
+        assert abs(duty_cycle - 1.0) < 0.001, f"Channel {ch}: Expected 100% duty cycle, got {duty_cycle * 100}%"
 
-# Bank A: uo_out (enable=0x00, pwm_mode=0x02)
-await exercise_bank(dut.uo_out, 0x00, 0x02, 0)
+        # Reset channel configuration
+        spi_input = await send_spi_transaction(device, 1, 0x00, 0)
+        spi_input = await send_spi_transaction(device, 1, 0x02, 0)
 
-# Bank B: uio_out (enable=0x01, pwm_mode=0x03)
-await exercise_bank(dut.uio_out, 0x01, 0x03, 8)
+    # Test PWM on uio_out channels (8-15)
+    for ch in range(8):
+        # Configure channel and set PWM mode
+        spi_input = await send_spi_transaction(device, 1, 0x01, 1 << ch)
+        spi_input = await send_spi_transaction(device, 1, 0x03, 1 << ch)
 
-# restore duty to 0%
-_ = await send_spi_transaction(dut, 1, 0x04, 0x00)
+        # Test 0% duty cycle
+        spi_input = await send_spi_transaction(device, 1, 0x04, 0x00)
+        duty_cycle, frequency = await pwm_test(device, device.uio_out, ch)
+        assert abs(duty_cycle - 0.0) < 0.001, f"Channel {ch + 8}: Expected 0% duty cycle, got {duty_cycle * 100}%"
 
-dut._log.info("PWM Duty Cycle test completed successfully (variant)")
+        # Test 50% duty cycle
+        spi_input = await send_spi_transaction(device, 1, 0x04, 0x80)
+        duty_cycle, frequency = await pwm_test(device, device.uio_out, ch)
+        assert abs(duty_cycle - 0.5) < 0.001, f"Channel {ch + 8}: Expected 50% duty cycle, got {duty_cycle * 100}%"
+
+        # Test 100% duty cycle
+        spi_input = await send_spi_transaction(device, 1, 0x04, 0xFF)
+        duty_cycle, frequency = await pwm_test(device, device.uio_out, ch)
+        assert abs(duty_cycle - 1.0) < 0.001, f"Channel {ch + 8}: Expected 100% duty cycle, got {duty_cycle * 100}%"
+
+        # Reset channel configuration
+        spi_input = await send_spi_transaction(device, 1, 0x01, 0)
+        spi_input = await send_spi_transaction(device, 1, 0x03, 0)
+
+    # Clear duty cycle register
+    spi_input = await send_spi_transaction(device, 1, 0x04, 0)
+
+    device._log.info("PWM duty cycle tests completed successfully")
