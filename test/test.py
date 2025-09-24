@@ -172,35 +172,25 @@ async def test_pwm_freq(dut):
     await send_spi_transaction(dut, 1, 0x02, 0x01)  # Enable PWM mode
     await send_spi_transaction(dut, 1, 0x04, 0x80)  # Set 50% duty cycle
     
-    # Measure frequency by timing rising edges
-    first_edge = None
-    second_edge = None
-    edge_count = 0
-    
-    # Wait for two rising edges
-    for _ in range(100000):  # Timeout safety
+    for _ in range(1000):
         await RisingEdge(dut.clk)
-        if dut.uo_out.value & 0x01:  # Check channel 0
-            if first_edge is None:
-                first_edge = cocotb.utils.get_sim_time(units='ns')
-            elif edge_count == 0:
-                second_edge = cocotb.utils.get_sim_time(units='ns')
-                break
-            edge_count += 1
-    
-    # Calculate frequency
-    period_ns = second_edge - first_edge
-    frequency = 1e9 / period_ns  # Convert to Hz
-    
-    # Check if frequency is within ±1% of 3 kHz
-    assert 2970 <= frequency <= 3030, f"PWM frequency {frequency:.1f} Hz outside 3000Hz ±1% tolerance"
-    
+        if not int(dut.uo_out.value) in (0, 1):
+            continue
+        break
 
+    await RisingEdge(dut.uo_out[0])
+    t1 = int(cocotb.utils.get_sim_time(units="ns"))
+    await RisingEdge(dut.uo_out[0])
+    t2 = int(cocotb.utils.get_sim_time(units="ns"))
 
+    period_ns = t2 - t1
+    assert period_ns > 0, "Measured non-positive period"
 
+    frequency = 1e9 / period_ns  # Hz
 
-    #####
-    dut._log.info("PWM Frequency test completed successfully")
+    assert 2970 <= frequency <= 3030, \
+        f"PWM frequency {frequency:.1f} Hz outside 3000 Hz ±1%"
+    dut._log.info(f"Measured PWM frequency: {frequency:.2f} Hz")
 
 
 @cocotb.test()
@@ -230,35 +220,40 @@ async def test_pwm_duty(dut):
     ]
     
     for duty_reg, expected_duty in test_cases:
-        # Configure PWM
-        await send_spi_transaction(dut, 1, 0x00, 0x01)  # Enable output
-        await send_spi_transaction(dut, 1, 0x02, 0x01)  # Enable PWM mode
-        await send_spi_transaction(dut, 1, 0x04, duty_reg)  # Set duty cycle
-        
-        # Measure duty cycle
-        high_time = 0
-        total_time = 0
-        
-        # Sample over multiple cycles
-        for _ in range(10000):
-            await RisingEdge(dut.clk)
-            if dut.uo_out.value & 0x01:
-                high_time += 1
-            total_time += 1
-        
-        if total_time > 0:
-            measured_duty = (high_time / total_time) * 100
-            # Check if duty cycle is within ±1% tolerance
-            assert abs(measured_duty - expected_duty) <= 1.0, \
-                f"Duty cycle {measured_duty:.1f}% != expected {expected_duty}% ±1%"
-        else:
-            # For 0% and 100% cases, check direct values
-            if expected_duty == 0:
-                assert dut.uo_out.value & 0x01 == 0, "Output should be low for 0% duty cycle"
-            elif expected_duty == 100:
-                assert dut.uo_out.value & 0x01 == 1, "Output should be high for 100% duty cycle"
-    
+        # Configure PWM for ch0
+        await send_spi_transaction(dut, 1, 0x00, 0x01)  # enable output
+        await send_spi_transaction(dut, 1, 0x02, 0x01)  # PWM mode
+        await send_spi_transaction(dut, 1, 0x04, duty_reg)
 
+        # Handle edge cases early
+        if expected_duty == 0:
+            # Give it a little time to settle
+            await ClockCycles(dut.clk, 1000)
+            assert (int(dut.uo_out.value) & 1) == 0, "Should be low at 0% duty"
+            continue
+        if expected_duty == 100:
+            await ClockCycles(dut.clk, 1000)
+            assert (int(dut.uo_out.value) & 1) == 1, "Should be high at 100% duty"
+            continue
 
-    #####
+        # Measure within one period: rise -> fall -> next rise
+        await RisingEdge(dut.uo_out[0])
+        t_rise1 = int(cocotb.utils.get_sim_time(units="ns"))
+
+        await FallingEdge(dut.uo_out[0])
+        t_fall = int(cocotb.utils.get_sim_time(units="ns"))
+
+        await RisingEdge(dut.uo_out[0])
+        t_rise2 = int(cocotb.utils.get_sim_time(units="ns"))
+
+        period = t_rise2 - t_rise1
+        high_time = t_fall - t_rise1
+        assert period > 0 and 0 <= high_time <= period, "Bad timing window"
+
+        measured_duty = 100.0 * high_time / period
+
+        assert abs(measured_duty - expected_duty) <= 1.0, \
+            f"Duty {measured_duty:.1f}% != expected {expected_duty}% ±1%"
+        dut._log.info(f"Duty OK: {measured_duty:.2f}% (expected {expected_duty}%)")
+
     dut._log.info("PWM Duty Cycle test completed successfully")
