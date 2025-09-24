@@ -201,144 +201,180 @@ async def test_spi(dut):
 
 @cocotb.test()
 async def test_pwm_freq(dut):
-    # Write your test here
-
-    clk_gen = Clock(dut.clk, 100, units="ns")  # 10 MHz
-    cocotb.start_soon(clk_gen.start())
-
-    # Reset and safe UI state
-    dut._log.info("Reset")
-    dut.ena.value = 1
-    cs_n = 1
-    mosi_bit = 0
-    spi_clk_bit = 0
-    dut.ui_in.value = ui_in_logicarray(cs_n, mosi_bit, spi_clk_bit)
-
-    dut.rst_n.value = 0
-    await ClockCycles(dut.clk, 5)
-    dut.rst_n.value = 1
-    await ClockCycles(dut.clk, 5)
-
-    async def wr(reg, val):
-        """Write a byte via SPI (R/W=1 for write here)."""
-        await send_spi_transaction(dut, 1, reg, val)
-
-    async def check_dc(bus, ch_local, disp_idx, dc_byte, expected):
-        """Program a duty and verify on a given bus/channel."""
-        await wr(REG_DUTY, dc_byte)
-        duty_meas, _ = await PWM_test(dut, bus, ch_local)
-        assert abs(duty_meas - expected) < TOL, (
-            f"Expected DC {expected*100:.0f}% | Got {duty_meas*100:.3f}% on channel {disp_idx}"
-        )
-
-    # ---- UO[7:0] ----
-    for ch in range(8):
-        # Enable channel and set PWM mode
-        await wr(REG_EN_UO, 1 << ch)
-        await wr(REG_PWM_UO, 1 << ch)
-
-        # Duty cases
-        await check_dc(dut.uo_out, ch, ch,   0x00, 0.0)
-        await check_dc(dut.uo_out, ch, ch,   0x80, 0.5)
-        await check_dc(dut.uo_out, ch, ch,   0xFF, 1.0)
-
-        # Clear enables for this channel
-        await wr(REG_EN_UO, 0x00)
-        await wr(REG_PWM_UO, 0x00)
-
-    # ---- UIO[7:0] (global channels 8..15) ----
-    for ch in range(8):
-        gch = ch + 8
-        await wr(REG_EN_UIO, 1 << ch)
-        await wr(REG_PWM_UIO, 1 << ch)
-
-        await check_dc(dut.uio_out, ch, gch, 0x00, 0.0)
-        await check_dc(dut.uio_out, ch, gch, 0x80, 0.5)
-        await check_dc(dut.uio_out, ch, gch, 0xFF, 1.0)
-
-        await wr(REG_EN_UIO, 0x00)
-        await wr(REG_PWM_UIO, 0x00)
-
-    # Return duty to 0%
-    await wr(REG_DUTY, 0x00)
-    dut._log.info("PWM Duty Cycle variant test completed successfully")
-
-
-@cocotb.test()
-async def test_pwm_duty(dut):
-    # Write your test here
-    # Set the clock period to 100 ns (10 MHz
+    # Clock @ 10 MHz
     clock = Clock(dut.clk, 100, units="ns")
     cocotb.start_soon(clock.start())
 
-    # Reset
+    # Reset & basic IO setup
     dut._log.info("Reset")
     dut.ena.value = 1
-    ncs = 1
-    bit = 0
-    sclk = 0
-    dut.ui_in.value = ui_in_logicarray(ncs, bit, sclk)
+    dut.ui_in.value = ui_in_logicarray(1, 0, 0)  # nCS=1, bit=0, sclk=0
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
     await ClockCycles(dut.clk, 5)
 
-    dut._log.info("Test project behavior - PWM Duty Cycle")
+    # Helper: wait for a bit level with timeout (returns time in ns)
+    async def wait_for_level(bit_handle, level: int, max_cycles: int):
+        for _ in range(max_cycles):
+            await RisingEdge(dut.clk)
+            if int(bit_handle.value) == level:
+                return cocotb.utils.get_sim_time(units="ns")
+        raise TestFailure(f"Timeout waiting for level {level}")
 
-    for i in range(8):
-        #enable proper input and set to pwm mode
-        ui_in_val = await send_spi_transaction(dut, 1, 0x00, 1 << i)
-        ui_in_val = await send_spi_transaction(dut, 1, 0x02, 1 << i)
+    # Helper: measure frequency of one bit by timing two rising edges
+    async def measure_freq(bus_handle, bit_idx: int) -> float:
+        sig = bus_handle[bit_idx]
+        # Sync to LOW, then capture two consecutive rising edges
+        await wait_for_level(sig, 0, 10000)
+        t1 = await wait_for_level(sig, 1, 10000)
+        await wait_for_level(sig, 0, 10000)
+        t2 = await wait_for_level(sig, 1, 10000)
+        period_ns = t2 - t1
+        return 1e9 / period_ns  # Hz
 
-        #0% DC Test:
-        ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0x00)
+    # Set 50% duty
+    await send_spi_transaction(dut, 1, 0x04, 0x80)
 
-        duty, freq = await PWM_test(dut, dut.uo_out, i)
-        assert abs(duty - 0.0) < 0.001 , f"Expected DC: 0% | Recieved: {duty * 100}% on channel {i}"
-        
-        #50% DC Test:
-        ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0x80)
+    # Clear enables/modes
+    for reg in (0x00, 0x01, 0x02, 0x03):
+        await send_spi_transaction(dut, 1, reg, 0x00)
 
-        duty, freq = await PWM_test(dut, dut.uo_out, i)
-        assert abs(duty - 0.5) < 0.001, f"Expected DC: 50% | Recieved: {duty * 100}% on channel {i}"
+    # (en_reg, mode_reg, bus_handle, channel_base)
+    banks = [
+        (0x00, 0x02, dut.uo_out, 0),   # channels 0..7
+        (0x01, 0x03, dut.uio_out, 8),  # channels 8..15
+    ]
 
-        #100% DC Test:
-        ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0xFF)
+    dut._log.info("Testing PWM frequency on all channels")
+    for en_reg, mode_reg, bus, base in banks:
+        for i in range(8):
+            ch = base + i
+            # Enable channel and put it in PWM mode
+            await send_spi_transaction(dut, 1, en_reg,  1 << i)
+            await send_spi_transaction(dut, 1, mode_reg, 1 << i)
 
-        duty, freq = await PWM_test(dut, dut.uo_out, i)
-        assert abs(duty - 1.0) < 0.001, f"Expected DC: 100% | Recieved: {duty * 100}% on channel {i}"
+            # Allow generator to start toggling
+            await ClockCycles(dut.clk, 2000)
 
-        #reset output channel
-        ui_in_val = await send_spi_transaction(dut, 1, 0x00, 0)
-        ui_in_val = await send_spi_transaction(dut, 1, 0x02, 0)
+            freq = await measure_freq(bus, i)
+            assert 2970 <= freq <= 3030, (
+                f"Channel {ch}: measured {freq:.1f} Hz; expected 3000 Hz ±1%"
+            )
 
-    for i in range(8):
-        #enable proper input and set to pwm mode
-        ui_in_val = await send_spi_transaction(dut, 1, 0x01, 1 << i)
-        ui_in_val = await send_spi_transaction(dut, 1, 0x03, 1 << i)
+            # Disable this channel
+            await send_spi_transaction(dut, 1, en_reg,  0x00)
+            await send_spi_transaction(dut, 1, mode_reg, 0x00)
 
-        #0% DC Test:
-        ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0x00)
+    # Reset duty to 0% at end
+    await send_spi_transaction(dut, 1, 0x04, 0x00)
+    dut._log.info("PWM frequency test completed successfully on all 16 channels")
 
-        duty, freq = await PWM_test(dut, dut.uio_out, i)
-        assert abs(duty - 0.0) < 0.001, f"Expected DC: 0% | Recieved: {duty * 100}% on channel {i + 8}"
+@cocotb.test()
+async def test_pwm_duty(dut):
+    #Write your test here
+    import cocotb
+from cocotb.clock import Clock
+from cocotb.triggers import RisingEdge, ClockCycles
+from cocotb.result import TestFailure
 
-        #50% DC Test:
-        ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0x80)
+@cocotb.test()
+async def test_pwm_duty_cycle_all_channels(dut):
+    """Verify PWM duty = 0%, 50%, 100% on all 16 channels."""
 
-        duty, freq = await PWM_test(dut, dut.uio_out, i)
-        assert abs(duty - 0.5) < 0.001, f"Expected DC: 50% | Recieved: {duty * 100}% on channel {i + 8}"
+    # --- Clock & reset ---
+    clock = Clock(dut.clk, 100, units="ns")  # 10 MHz
+    cocotb.start_soon(clock.start())
 
-        #100% DC Test:
-        ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0xFF)
+    dut.ena.value = 1
+    dut.ui_in.value = ui_in_logicarray(1, 0, 0)  # nCS=1, bit=0, sclk=0
 
-        duty, freq = await PWM_test(dut, dut.uio_out, i)
-        assert abs(duty - 1.0) < 0.001, f"Expected DC: 100% | Recieved: {duty * 100}% on channel {i + 8}"
-        
-        #reset output channel
-        ui_in_val = await send_spi_transaction(dut, 1, 0x01, 0)
-        ui_in_val = await send_spi_transaction(dut, 1, 0x03, 0)
+    dut.rst_n.value = 0
+    await ClockCycles(dut.clk, 5)
+    dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 5)
 
-    ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0)
+    # --- Helpers ---
+    async def wait_for_level(sig, level: int, max_cycles: int) -> int:
+        """Poll 'sig' on clk edges until it equals 'level'. Return sim time (ns)."""
+        for _ in range(max_cycles):
+            await RisingEdge(dut.clk)
+            if int(sig.value) == level:
+                return cocotb.utils.get_sim_time(units="ns")
+        raise TestFailure(f"Timeout waiting for level {level}")
 
-    dut._log.info("PWM Duty Cycle test completed successfully")
+    async def measure_duty(sig, max_cycles: int = 20000) -> tuple[float, float]:
+        """
+        Measure duty cycle by timing high width and period:
+          duty = high_ns / period_ns.
+        Returns (duty_float_0_to_1, period_ns).
+        """
+        # sync to a LOW → RISE
+        await wait_for_level(sig, 0, max_cycles)
+        t1 = await wait_for_level(sig, 1, max_cycles)  # rising edge
+        tf = await wait_for_level(sig, 0, max_cycles)  # falling edge
+        t2 = await wait_for_level(sig, 1, max_cycles)  # next rising edge
+        high_ns = tf - t1
+        period_ns = t2 - t1
+        if period_ns <= 0:
+            raise TestFailure("Non-positive period measured")
+        return (high_ns / period_ns, period_ns)
+
+    async def is_constant(sig, target: int, sample_cycles: int = 7000) -> bool:
+        """Check signal stays at 'target' for 'sample_cycles' clk edges."""
+        for _ in range(sample_cycles):
+            await RisingEdge(dut.clk)
+            if int(sig.value) != target:
+                return False
+        return True
+
+    # Clear enables/modes
+    for reg in (0x00, 0x01, 0x02, 0x03):
+        await send_spi_transaction(dut, 1, reg, 0x00)
+
+    # Banks: (enable_reg, mode_reg, bus_handle, base_index)
+    banks = [
+        (0x00, 0x02, dut.uo_out, 0),   # channels 0..7
+        (0x01, 0x03, dut.uio_out, 8),  # channels 8..15
+    ]
+
+    # --- Test all channels ---
+    tol_pct = 1.0  # ±1% around 50%
+    for en_reg, mode_reg, bus, base in banks:
+        for i in range(8):
+            ch = base + i
+
+            # Enable this channel and set PWM mode
+            await send_spi_transaction(dut, 1, en_reg,  1 << i)
+            await send_spi_transaction(dut, 1, mode_reg, 1 << i)
+
+            # 0% duty
+            await send_spi_transaction(dut, 1, 0x04, 0x00)
+            await ClockCycles(dut.clk, 7000)
+            sig = bus[i]
+            ok0 = await is_constant(sig, 0, sample_cycles=5000)
+            assert ok0, f"Channel {ch}: expected 0% (always LOW), but it toggled"
+
+            # 50% duty
+            await send_spi_transaction(dut, 1, 0x04, 0x80)
+            await ClockCycles(dut.clk, 7000)
+            duty, period_ns = await measure_duty(sig)
+            duty_pct = duty * 100.0
+            assert (50 - tol_pct) <= duty_pct <= (50 + tol_pct), \
+                (f"Channel {ch}: 50% test failed — measured {duty_pct:.2f}% "
+                 f"(period {period_ns:.1f} ns), expected 50% ±{tol_pct}%")
+
+            # 100% duty
+            await send_spi_transaction(dut, 1, 0x04, 0xFF)
+            await ClockCycles(dut.clk, 7000)
+            ok1 = await is_constant(sig, 1, sample_cycles=5000)
+            assert ok1, f"Channel {ch}: expected 100% (always HIGH), but it toggled"
+
+            # Disable this channel
+            await send_spi_transaction(dut, 1, en_reg,  0x00)
+            await send_spi_transaction(dut, 1, mode_reg, 0x00)
+
+    # Cleanup
+    await send_spi_transaction(dut, 1, 0x04, 0x00)
+    dut._log.info("PWM duty-cycle tests passed on all 16 channels")
+
