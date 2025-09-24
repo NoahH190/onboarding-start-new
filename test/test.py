@@ -267,74 +267,78 @@ async def test_pwm_freq(dut):
 @cocotb.test()
 async def test_pwm_duty(dut):
     # Write your test here
-    clock = Clock(device.clk, 100, units="ns")
+        # Set the clock period to 100 ns (10 MHz)
+    clock = Clock(device_under_test.clk, 100, units="ns")
     cocotb.start_soon(clock.start())
 
-    # Perform reset sequence
-    device._log.info("Starting reset sequence")
-    device.enable.value = 1
+    # Reset
+    device_under_test._log.info("Reset")
+    device_under_test.ena.value = 1
     chip_select = 1
     data_bit = 0
-    spi_clock = 0
-    device.input_spi.value = spi_logic_array(chip_select, data_bit, spi_clock)
-    device.reset_n.value = 0
-    await ClockCycles(device.clk, 5)
-    device.reset_n.value = 1
-    await ClockCycles(device.clk, 5)
+    spi_clk = 0
+    device_under_test.ui_in.value = ui_in_logicarray(chip_select, data_bit, spi_clk)
+    device_under_test.rst_n.value = 0
+    await ClockCycles(device_under_test.clk, 5)
+    device_under_test.rst_n.value = 1
+    await ClockCycles(device_under_test.clk, 5)
 
-    device._log.info("Testing PWM duty cycle behavior")
+    device_under_test._log.info("Test project behavior - PWM Duty Cycle")
 
-    # Test PWM on uo_out channels (0-7)
-    for ch in range(8):
-        # Configure channel and set PWM mode
-        spi_input = await send_spi_transaction(device, 1, 0x00, 1 << ch)
-        spi_input = await send_spi_transaction(device, 1, 0x02, 1 << ch)
+    for channel in range(8):
+        #enable proper input and set to pwm mode
+        spi_data = await send_spi_transaction(device_under_test, 1, 0x00, 1 << channel)
+        spi_data = await send_spi_transaction(device_under_test, 1, 0x02, 1 << channel)
 
-        # Test 0% duty cycle
-        spi_input = await send_spi_transaction(device, 1, 0x04, 0x00)
-        duty_cycle, frequency = await pwm_test(device, device.uo_out, ch)
-        assert abs(duty_cycle - 0.0) < 0.001, f"Channel {ch}: Expected 0% duty cycle, got {duty_cycle * 100}%"
+        #0% DC Test:
+        spi_data = await send_spi_transaction(device_under_test, 1, 0x04, 0x00)
 
-        # Test 50% duty cycle
-        spi_input = await send_spi_transaction(device, 1, 0x04, 0x80)
-        duty_cycle, frequency = await pwm_test(device, device.uo_out, ch)
-        assert abs(duty_cycle - 0.5) < 0.001, f"Channel {ch}: Expected 50% duty cycle, got {duty_cycle * 100}%"
+        duty_cycle, frequency = await PWM_test(device_under_test, device_under_test.uo_out, channel)
+        assert abs(duty_cycle - 0.0) < 0.001 , f"Expected DC: 0% | Recieved: {duty_cycle * 100}% on channel {channel}"
+        
+        #50% DC Test:
+        spi_data = await send_spi_transaction(device_under_test, 1, 0x04, 0x80)
 
-        # Test 100% duty cycle
-        spi_input = await send_spi_transaction(device, 1, 0x04, 0xFF)
-        duty_cycle, frequency = await pwm_test(device, device.uo_out, ch)
-        assert abs(duty_cycle - 1.0) < 0.001, f"Channel {ch}: Expected 100% duty cycle, got {duty_cycle * 100}%"
+        duty_cycle, frequency = await PWM_test(device_under_test, device_under_test.uo_out, channel)
+        assert abs(duty_cycle - 0.5) < 0.001, f"Expected DC: 50% | Recieved: {duty_cycle * 100}% on channel {channel}"
 
-        # Reset channel configuration
-        spi_input = await send_spi_transaction(device, 1, 0x00, 0)
-        spi_input = await send_spi_transaction(device, 1, 0x02, 0)
+        #100% DC Test:
+        spi_data = await send_spi_transaction(device_under_test, 1, 0x04, 0xFF)
 
-    # Test PWM on uio_out channels (8-15)
-    for ch in range(8):
-        # Configure channel and set PWM mode
-        spi_input = await send_spi_transaction(device, 1, 0x01, 1 << ch)
-        spi_input = await send_spi_transaction(device, 1, 0x03, 1 << ch)
+        duty_cycle, frequency = await PWM_test(device_under_test, device_under_test.uo_out, channel)
+        assert abs(duty_cycle - 1.0) < 0.001, f"Expected DC: 100% | Recieved: {duty_cycle * 100}% on channel {channel}"
 
-        # Test 0% duty cycle
-        spi_input = await send_spi_transaction(device, 1, 0x04, 0x00)
-        duty_cycle, frequency = await pwm_test(device, device.uio_out, ch)
-        assert abs(duty_cycle - 0.0) < 0.001, f"Channel {ch + 8}: Expected 0% duty cycle, got {duty_cycle * 100}%"
+        #reset output channel
+        spi_data = await send_spi_transaction(device_under_test, 1, 0x00, 0)
+        spi_data = await send_spi_transaction(device_under_test, 1, 0x02, 0)
 
-        # Test 50% duty cycle
-        spi_input = await send_spi_transaction(device, 1, 0x04, 0x80)
-        duty_cycle, frequency = await pwm_test(device, device.uio_out, ch)
-        assert abs(duty_cycle - 0.5) < 0.001, f"Channel {ch + 8}: Expected 50% duty cycle, got {duty_cycle * 100}%"
+    for channel in range(8):
+        #enable proper input and set to pwm mode
+        spi_data = await send_spi_transaction(device_under_test, 1, 0x01, 1 << channel)
+        spi_data = await send_spi_transaction(device_under_test, 1, 0x03, 1 << channel)
 
-        # Test 100% duty cycle
-        spi_input = await send_spi_transaction(device, 1, 0x04, 0xFF)
-        duty_cycle, frequency = await pwm_test(device, device.uio_out, ch)
-        assert abs(duty_cycle - 1.0) < 0.001, f"Channel {ch + 8}: Expected 100% duty cycle, got {duty_cycle * 100}%"
+        #0% DC Test:
+        spi_data = await send_spi_transaction(device_under_test, 1, 0x04, 0x00)
 
-        # Reset channel configuration
-        spi_input = await send_spi_transaction(device, 1, 0x01, 0)
-        spi_input = await send_spi_transaction(device, 1, 0x03, 0)
+        duty_cycle, frequency = await PWM_test(device_under_test, device_under_test.uio_out, channel)
+        assert abs(duty_cycle - 0.0) < 0.001, f"Expected DC: 0% | Recieved: {duty_cycle * 100}% on channel {channel + 8}"
 
-    # Clear duty cycle register
-    spi_input = await send_spi_transaction(device, 1, 0x04, 0)
+        #50% DC Test:
+        spi_data = await send_spi_transaction(device_under_test, 1, 0x04, 0x80)
 
-    device._log.info("PWM duty cycle tests completed successfully")
+        duty_cycle, frequency = await PWM_test(device_under_test, device_under_test.uio_out, channel)
+        assert abs(duty_cycle - 0.5) < 0.001, f"Expected DC: 50% | Recieved: {duty_cycle * 100}% on channel {channel + 8}"
+
+        #100% DC Test:
+        spi_data = await send_spi_transaction(device_under_test, 1, 0x04, 0xFF)
+
+        duty_cycle, frequency = await PWM_test(device_under_test, device_under_test.uio_out, channel)
+        assert abs(duty_cycle - 1.0) < 0.001, f"Expected DC: 100% | Recieved: {duty_cycle * 100}% on channel {channel + 8}"
+        
+        #reset output channel
+        spi_data = await send_spi_transaction(device_under_test, 1, 0x01, 0)
+        spi_data = await send_spi_transaction(device_under_test, 1, 0x03, 0)
+
+    spi_data = await send_spi_transaction(device_under_test, 1, 0x04, 0)
+
+    device_under_test._log.info("PWM Duty Cycle test completed successfully")
