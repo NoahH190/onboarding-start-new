@@ -204,130 +204,98 @@ async def test_pwm_freq(dut):
     # Write your test here
 
     # Set the clock period to 100 ns (10 MHz)
-    clock = Clock(dut.clk, 100, units="ns")
-    cocotb.start_soon(clock.start())
+# Start a 10 MHz clock
+cocotb.start_soon(Clock(dut.clk, 100, units="ns").start())
 
-    # Reset
-    dut._log.info("Reset")
-    dut.ena.value = 1
-    ncs = 1
-    bit = 0
-    sclk = 0
-    dut.ui_in.value = ui_in_logicarray(ncs, bit, sclk)
-    dut.rst_n.value = 0
-    await ClockCycles(dut.clk, 5)
-    dut.rst_n.value = 1
-    await ClockCycles(dut.clk, 5)
+# Reset
+dut._log.info("Resetting DUT")
+dut.ena.value = 1
+cs, di, sc = 1, 0, 0
+dut.ui_in.value = ui_in_logicarray(cs, di, sc)
+dut.rst_n.value = 0
+await ClockCycles(dut.clk, 5)
+dut.rst_n.value = 1
+await ClockCycles(dut.clk, 5)
 
-    dut._log.info("Test project behavior - PWM Freq")
+dut._log.info("PWM frequency check")
 
-    #set DC to 50% for measuring freq:
-    ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0x80)
+# Helper: exercise one 8-channel bank
+async def _check_bank(out_bus, en_addr, mode_addr, channel_offset):
+    for ch in range(8):
+        # enable channel and set PWM mode
+        _ = await send_spi_transaction(dut, 1, en_addr, 1 << ch)
+        _ = await send_spi_transaction(dut, 1, mode_addr, 1 << ch)
 
-    for i in range(8):
-        #enable proper input and set to pwm mode
-        ui_in_val = await send_spi_transaction(dut, 1, 0x00, 1 << i)
-        ui_in_val = await send_spi_transaction(dut, 1, 0x02, 1 << i)
+        dc, f_hz = await PWM_test(dut, out_bus, ch)
+        assert 2970 < f_hz < 3030, (
+            f"Expected 2970–3030 Hz, got {f_hz} Hz on channel {ch + channel_offset}"
+        )
 
-        duty, freq = await PWM_test(dut, dut.uo_out, i)
-        assert 2970 < freq < 3030, f"Expected Freq: 2970-3030Hz | Recieved: {freq}Hz on channel {i}"
-        
-        #reset output channel
-        ui_in_val = await send_spi_transaction(dut, 1, 0x00, 0)
-        ui_in_val = await send_spi_transaction(dut, 1, 0x02, 0)
+        # reset channel config
+        _ = await send_spi_transaction(dut, 1, en_addr, 0x0)
+        _ = await send_spi_transaction(dut, 1, mode_addr, 0x0)
 
-    for i in range(8):
-        #enable proper input and set to pwm mode
-        ui_in_val = await send_spi_transaction(dut, 1, 0x01, 1 << i)
-        ui_in_val = await send_spi_transaction(dut, 1, 0x03, 1 << i)
+# 50% duty for frequency measurement
+_ = await send_spi_transaction(dut, 1, 0x04, 0x80)
 
-        duty, freq = await PWM_test(dut, dut.uio_out, i)
-        assert 2970 < freq < 3030, f"Expected Freq: 2970-3030Hz | Recieved: {freq}Hz on channel {i + 8}"
-        
-        #reset output channel
-        ui_in_val = await send_spi_transaction(dut, 1, 0x01, 0)
-        ui_in_val = await send_spi_transaction(dut, 1, 0x03, 0)
+# Bank 0: uo_out, enable 0x00, pwm_mode 0x02
+await _check_bank(dut.uo_out, 0x00, 0x02, 0)
 
-    ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0)
+# Bank 1: uio_out, enable 0x01, pwm_mode 0x03
+await _check_bank(dut.uio_out, 0x01, 0x03, 8)
 
-    dut._log.info("PWM Frequency test completed successfully")
+# Clear duty back to 0
+_ = await send_spi_transaction(dut, 1, 0x04, 0x00)
+
+dut._log.info("PWM frequency test completed")
 
 
 @cocotb.test()
 async def test_pwm_duty(dut):
     # Write your test here
-    # Set the clock period to 100 ns (10 MHz)
-    clock = Clock(dut.clk, 100, units="ns")
-    cocotb.start_soon(clock.start())
+# 10 MHz clock
+cocotb.start_soon(Clock(dut.clk, 100, units="ns").start())
 
-    # Reset
-    dut._log.info("Reset")
-    dut.ena.value = 1
-    ncs = 1
-    bit = 0
-    sclk = 0
-    dut.ui_in.value = ui_in_logicarray(ncs, bit, sclk)
-    dut.rst_n.value = 0
-    await ClockCycles(dut.clk, 5)
-    dut.rst_n.value = 1
-    await ClockCycles(dut.clk, 5)
+# Reset sequence
+dut._log.info("Reset start")
+dut.ena.value = 1
+cs_bit, data_bit, sclk_bit = 1, 0, 0
+dut.ui_in.value = ui_in_logicarray(cs_bit, data_bit, sclk_bit)
+dut.rst_n.value = 0
+await ClockCycles(dut.clk, 5)
+dut.rst_n.value = 1
+await ClockCycles(dut.clk, 5)
 
-    dut._log.info("Test project behavior - PWM Duty Cycle")
+dut._log.info("Test project behavior - PWM Duty Cycle (variant)")
 
-    for i in range(8):
-        #enable proper input and set to pwm mode
-        ui_in_val = await send_spi_transaction(dut, 1, 0x00, 1 << i)
-        ui_in_val = await send_spi_transaction(dut, 1, 0x02, 1 << i)
+TOL = 1e-3
+DC_CASES = [(0x00, 0.0), (0x80, 0.5), (0xFF, 1.0)]
 
-        #0% DC Test:
-        ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0x00)
+async def exercise_bank(out_bus, en_addr, mode_addr, chan_offset):
+    for chan in range(8):
+        # enable channel and select PWM mode
+        _ = await send_spi_transaction(dut, 1, en_addr, 1 << chan)
+        _ = await send_spi_transaction(dut, 1, mode_addr, 1 << chan)
 
-        duty, freq = await PWM_test(dut, dut.uo_out, i)
-        assert abs(duty - 0.0) < 0.001 , f"Expected DC: 0% | Recieved: {duty * 100}% on channel {i}"
-        
-        #50% DC Test:
-        ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0x80)
+        # sweep duty cycles
+        for raw, expected in DC_CASES:
+            _ = await send_spi_transaction(dut, 1, 0x04, raw)
+            duty_meas, _ = await PWM_test(dut, out_bus, chan)
+            assert abs(duty_meas - expected) < TOL, (
+                f"Expected DC {expected*100:.0f}% | Got {duty_meas*100:.3f}% on channel {chan + chan_offset}"
+            )
 
-        duty, freq = await PWM_test(dut, dut.uo_out, i)
-        assert abs(duty - 0.5) < 0.001, f"Expected DC: 50% | Recieved: {duty * 100}% on channel {i}"
+        # clear channel configuration
+        _ = await send_spi_transaction(dut, 1, en_addr, 0)
+        _ = await send_spi_transaction(dut, 1, mode_addr, 0)
 
-        #100% DC Test:
-        ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0xFF)
+# Bank A: uo_out (enable=0x00, pwm_mode=0x02)
+await exercise_bank(dut.uo_out, 0x00, 0x02, 0)
 
-        duty, freq = await PWM_test(dut, dut.uo_out, i)
-        assert abs(duty - 1.0) < 0.001, f"Expected DC: 100% | Recieved: {duty * 100}% on channel {i}"
+# Bank B: uio_out (enable=0x01, pwm_mode=0x03)
+await exercise_bank(dut.uio_out, 0x01, 0x03, 8)
 
-        #reset output channel
-        ui_in_val = await send_spi_transaction(dut, 1, 0x00, 0)
-        ui_in_val = await send_spi_transaction(dut, 1, 0x02, 0)
+# restore duty to 0%
+_ = await send_spi_transaction(dut, 1, 0x04, 0x00)
 
-    for i in range(8):
-        #enable proper input and set to pwm mode
-        ui_in_val = await send_spi_transaction(dut, 1, 0x01, 1 << i)
-        ui_in_val = await send_spi_transaction(dut, 1, 0x03, 1 << i)
-
-        #0% DC Test:
-        ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0x00)
-
-        duty, freq = await PWM_test(dut, dut.uio_out, i)
-        assert abs(duty - 0.0) < 0.001, f"Expected DC: 0% | Recieved: {duty * 100}% on channel {i + 8}"
-
-        #50% DC Test:
-        ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0x80)
-
-        duty, freq = await PWM_test(dut, dut.uio_out, i)
-        assert abs(duty - 0.5) < 0.001, f"Expected DC: 50% | Recieved: {duty * 100}% on channel {i + 8}"
-
-        #100% DC Test:
-        ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0xFF)
-
-        duty, freq = await PWM_test(dut, dut.uio_out, i)
-        assert abs(duty - 1.0) < 0.001, f"Expected DC: 100% | Recieved: {duty * 100}% on channel {i + 8}"
-        
-        #reset output channel
-        ui_in_val = await send_spi_transaction(dut, 1, 0x01, 0)
-        ui_in_val = await send_spi_transaction(dut, 1, 0x03, 0)
-
-    ui_in_val = await send_spi_transaction(dut, 1, 0x04, 0)
-
-    dut._log.info("PWM Duty Cycle test completed successfully")
+dut._log.info("PWM Duty Cycle test completed successfully (variant)")
