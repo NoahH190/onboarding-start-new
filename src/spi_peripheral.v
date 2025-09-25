@@ -48,7 +48,7 @@ module spi_peripheral (
   wire ncs_fall  = ~ncs_sync  &  ncs_q;
 
   // SPI shift & decode
-  reg [15:0] shift_reg;
+  reg [14:0] shift_reg;
   reg [4:0]  bit_cnt;
   reg        in_frame;
 
@@ -62,7 +62,7 @@ module spi_peripheral (
   assign en_reg_pwm_15_8  = en_pwm_mode[15:8];
 
   // Precompute the shifted value that includes the new bit
-  wire [15:0] next_shift = {shift_reg[14:0], copi_sync};
+  wire [15:0] next_shift = {shift_reg, copi_sync};
 
   // SINGLE writer for en_out, en_pwm_mode, pwm_duty_cycle, shift_reg, bit_cnt, in_frame
   always @(posedge clk or negedge rst_n) begin
@@ -70,7 +70,7 @@ module spi_peripheral (
       en_out         <= 16'h0000;
       en_pwm_mode    <= 16'h0000;
       pwm_duty_cycle <= 8'h00;
-      shift_reg      <= 16'd0;
+      shift_reg      <= 15'd0;
       bit_cnt        <= 5'd0;
       in_frame       <= 1'b0;
     end else begin
@@ -82,7 +82,7 @@ module spi_peripheral (
 
       // Shift on SCLK rising while CS is low
       if (in_frame && !ncs_sync && sclk_rise) begin
-        shift_reg <= next_shift;
+        shift_reg <= next_shift[14:0];
         bit_cnt   <= bit_cnt + 5'd1;
 
         // 16th bit just arrived (old bit_cnt == 15)
